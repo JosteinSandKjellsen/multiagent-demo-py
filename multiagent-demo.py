@@ -188,7 +188,7 @@ manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=LLM_CONFIG)
 
 user_proxy.initiate_chat(
     manager, message=f"""
-Please rewerite this Oracle PL/SQL function into a python code function. Code should be written as a single program.
+Please rewrite this Oracle PL/SQL function into a python code function. Code should be written as a single program.
 The function should return the results as a logical structure. Then print it similar to the PL/SQL output.
 
 PL/SQL function:
@@ -216,7 +216,7 @@ salaries.csv:
 ```
 
 When you are satisfied with the code present the result to user. For the test use hardcoded CSV data provided above but keep it separate from the business logic. No need for logic reading for CSV-files.
-Logic should be written so it can easiliy be changed to read from the production Oracle database.
+Logic should be written so it can easily be changed to read from the production Oracle database.
 
 The expected output for Department 1 should be:
 ```
