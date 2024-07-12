@@ -118,3 +118,4 @@ dmypy.json
 
 # Exclude the /code folder
 /code/
+.DS_Store
