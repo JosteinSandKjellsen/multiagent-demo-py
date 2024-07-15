@@ -1,33 +1,30 @@
 import os
-import autogen
+import logging
 from typing import Dict, List
-from autogen import Agent
+from dataclasses import dataclass
 
-# Get contents of files
-def get_file_content(file_path: str) -> str:
-    with open(file_path, "r") as file:
-        return file.read()  # Read the file and return the content as a string 
+import autogen
+from autogen import Agent, GroupChat, GroupChatManager
 
-# Read testdata files
-plsqlScript = get_file_content("testdata-sql-plsql.sql")
-tablesScript = get_file_content("testdata-sql-tables.sql")
-departmentsData = get_file_content("testdata-csv-departments.csv")
-employeesData = get_file_content("testdata-csv-employees.csv") 
-salariesData = get_file_content("testdata-csv-salaries.csv")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Anthropic's Sonnet llm config
-ANTHROPIC_CONFIG = [
-    {
-        "api_type": "anthropic",
-        "model": "claude-3-5-sonnet-20240620",
-        "api_key": os.getenv("ANTHROPIC_API_KEY"),
-        "cache_seed": None,
-    },
-]
+@dataclass
+class AgentConfig:
+    name: str
+    system_message: str
+    is_user_proxy: bool
+    human_input_mode: str
+    code_execution_config: Dict = None
 
-LLM_CONFIG = {"config_list": ANTHROPIC_CONFIG, "cache_seed": None}
+# Constants
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = "claude-3-5-sonnet-20240620"
+MAX_CHAT_ROUNDS = 20
+USE_DOCKER = os.getenv("AUTOGEN_USE_DOCKER", "False").lower() in ("true", "1", "t")
 
-# Configuration constants
+# Agent system messages
 PLANNER_SYSTEM_MESSAGE = """
 - Suggest a plan involving an engineer who writes code, a reviewer who checks code, and an executor who runs code.
 - Explain the plan clearly, specifying which step is performed by each participant.
@@ -82,146 +79,145 @@ EXECUTOR_SYSTEM_MESSAGE = """
 - If the code execution is successful, return the result to the planner by saying "Dear planner."
 """
 
-def create_user_proxy_agent(name: str, system_message: str, code_execution_config: bool):
-    """Create a UserProxyAgent with the given parameters."""
-    return autogen.UserProxyAgent(
-        name=name,
-        system_message=system_message,
-        code_execution_config=code_execution_config,
-    )
+def get_file_content(file_path: str) -> str:
+    """Read and return the content of a file."""
+    try:
+        with open(file_path, "r") as file:
+            return file.read()
+    except IOError as e:
+        logger.error(f"Error reading file {file_path}: {e}")
+        raise
 
-def create_assistant_agent(name: str, system_message: str):
-    """Create an AssistantAgent with the given parameters."""
-    return autogen.AssistantAgent(
-        name=name,
-        system_message=system_message,
-        llm_config=LLM_CONFIG,
-    )
+def create_llm_config() -> Dict:
+    """Create and return the LLM configuration."""
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
-# Create agents
-user_proxy = create_user_proxy_agent(
-    name="Admin",
-    system_message="A human admin.",
-    code_execution_config=False,
-)
+    return {
+        "config_list": [
+            {
+                "api_type": "anthropic",
+                "model": ANTHROPIC_MODEL,
+                "api_key": ANTHROPIC_API_KEY,
+            }
+        ],
+        "cache_seed": None,
+    }
 
-planner = create_assistant_agent(
-    name="Planner",
-    system_message=PLANNER_SYSTEM_MESSAGE,
-)
+def create_agent(config: AgentConfig, llm_config: Dict) -> Agent:
+    """Create and return an agent based on the provided configuration."""
+    if config.is_user_proxy:
+        return autogen.UserProxyAgent(
+            name=config.name,
+            system_message=config.system_message,
+            human_input_mode=config.human_input_mode,
+            code_execution_config=config.code_execution_config,
+        )
+    else:
+        return autogen.AssistantAgent(
+            name=config.name,
+            system_message=config.system_message,
+            llm_config=llm_config,
+        )
 
-engineer = create_assistant_agent(
-    name="Engineer",
-    system_message=ENGINEER_SYSTEM_MESSAGE,
-)
-
-reviewer = create_assistant_agent(
-    name="Reviewer",
-    system_message=REVIEWER_SYSTEM_MESSAGE,
-)
-
-executor = autogen.UserProxyAgent(
-    name="Executor",
-    system_message=EXECUTOR_SYSTEM_MESSAGE,
-    human_input_mode="NEVER",
-    code_execution_config={
-        "last_n_messages": 3,
-        "work_dir": "code",
-        "use_docker": False,
-    },  # Please set use_docker=True if docker is available to run the generated code. Using docker is safer than running the generated code directly.
-)
-
-
-def custom_speaker_selection_func(last_speaker: Agent, groupchat: autogen.GroupChat):
-    """
-    Selects the next speaker in a multi-agent conversation based on the previous messages.
-
-    Parameters:
-        last_speaker (Agent): The agent who spoke last.
-        groupchat (autogen.GroupChat): The group chat containing the conversation messages.
-
-    Returns:
-        Agent: The agent selected to speak next.
-
-    Description:
-        This function determines the next agent to speak in a multi-agent conversation based on the previous messages in the group chat.
-    """
+def custom_speaker_selection_func(last_speaker: Agent, groupchat: GroupChat) -> Agent:
+    """Select the next speaker based on the conversation flow."""
     messages = groupchat.messages
 
     if len(messages) <= 1:
-        return planner
+        return groupchat.agents[1]  # Planner
     
-    elif "Dear user" in messages[-1]["content"]:
-        return user_proxy
+    last_message = messages[-1]["content"]
     
-    elif "Dear planner" in messages[-1]["content"]:
-        return planner
-    
-    elif "Dear engineer" in messages[-1]["content"]:
-        return engineer
+    speaker_map = {
+        "Dear user": groupchat.agents[0],  # User Proxy
+        "Dear planner": groupchat.agents[1],  # Planner
+        "Dear engineer": groupchat.agents[2],  # Engineer
+        "Dear reviewer": groupchat.agents[3],  # Reviewer
+        "Dear executor": groupchat.agents[4],  # Executor
+    }
 
-    elif "Dear reviewer" in messages[-1]["content"]:
-        return reviewer
-    
-    elif "Dear executor" in messages[-1]["content"]:
-        return executor
+    for key, agent in speaker_map.items():
+        if key in last_message:
+            return agent
 
-    elif last_speaker is executor:
-        if "exitcode: 1" in messages[-1]["content"]:
-            # If the last message indicates an error, let the engineer improve the code
-            return engineer
-        else:
-            # Otherwise, let the planner speak
-            return planner
+    if last_speaker == groupchat.agents[4]:  # Executor
+        return groupchat.agents[2] if "exitcode: 1" in last_message else groupchat.agents[1]
 
-    else:
-        return planner
-    
-groupchat = autogen.GroupChat(
-agents=[user_proxy, engineer, reviewer, planner, executor],
-messages=[],
-max_round=20,
-speaker_selection_method=custom_speaker_selection_func,
-)
+    return groupchat.agents[1]  # Default to Planner
 
-manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=LLM_CONFIG)
+def main():
+    # Read test data
+    plsql_script = get_file_content("testdata-sql-plsql.sql")
+    tables_script = get_file_content("testdata-sql-tables.sql")
+    departments_data = get_file_content("testdata-csv-departments.csv")
+    employees_data = get_file_content("testdata-csv-employees.csv")
+    salaries_data = get_file_content("testdata-csv-salaries.csv")
 
-user_proxy.initiate_chat(
-    manager, message=f"""
-Please rewrite this Oracle PL/SQL function into a python code function. Code should be written as a single program.
-The function should return the results as a logical structure. Then print it similar to the PL/SQL output.
+    llm_config = create_llm_config()
 
-PL/SQL function:
- ```
-{plsqlScript}
-```
+    # Create agents
+    agents = [
+        create_agent(AgentConfig("Admin", "A human admin.", True, "ALWAYS", None), llm_config),
+        create_agent(AgentConfig("Planner", PLANNER_SYSTEM_MESSAGE, False, "", None), llm_config),
+        create_agent(AgentConfig("Engineer", ENGINEER_SYSTEM_MESSAGE, False, "", None), llm_config),
+        create_agent(AgentConfig("Reviewer", REVIEWER_SYSTEM_MESSAGE, False, "", None), llm_config),
+        create_agent(AgentConfig("Executor", EXECUTOR_SYSTEM_MESSAGE, True, "NEVER", {
+            "last_n_messages": 3,
+            "work_dir": "code",
+            "use_docker": USE_DOCKER,
+        }), llm_config),
+    ]
 
-For context, here's the tables used in the PL/SQL function:
-```
-{tablesScript}
-```
+    groupchat = GroupChat(
+        agents=agents,
+        messages=[],
+        max_round=MAX_CHAT_ROUNDS,
+        speaker_selection_method=custom_speaker_selection_func,
+    )
 
-This is for testing purpose, so you don't need to make code for connecting to Oracle database. Instead use the data from the following csv data when testing logic. The csv data contains the following data:
-departments.csv:
-```
-{departmentsData}
-```
-employees.csv:
-```
-{employeesData}
-```
-salaries.csv:
-```
-{salariesData}
-```
+    manager = GroupChatManager(groupchat=groupchat, llm_config=llm_config)
 
-When you are satisfied with the code present the result to user. For the test use hardcoded CSV data provided above but keep it separate from the business logic. No need for logic reading for CSV-files.
-Logic should be written so it can easily be changed to read from the production Oracle database.
+    task_message = f"""
+    Please rewrite this Oracle PL/SQL function into a python code function. Code should be written as a single program.
+    The function should return the results as a logical structure. Then print it similar to the PL/SQL output.
 
-The expected output for Department 1 should be:
-```
-Emp ID: 201, Name: John Doe, Salary: 50000, Bonus: 5000
-Emp ID: 202, Name: Jane Smith, Salary: 55000, Bonus: 5500
-Total Salary for Department 1: 115500
+    PL/SQL function:
+    ```
+    {plsql_script}
+    ```
+
+    For context, here's the tables used in the PL/SQL function:
+    ```
+    {tables_script}
+    ```
+
+    This is for testing purpose, so you don't need to make code for connecting to Oracle database. Instead use the data from the following csv data when testing logic. The csv data contains the following data:
+    departments.csv:
+    ```
+    {departments_data}
+    ```
+    employees.csv:
+    ```
+    {employees_data}
+    ```
+    salaries.csv:
+    ```
+    {salaries_data}
+    ```
+
+    When you are satisfied with the code present the result to user. For the test use hardcoded CSV data provided above but keep it separate from the business logic. No need for logic reading for CSV-files.
+    Logic should be written so it can easily be changed to read from the production Oracle database.
+
+    The expected output for Department 1 should be:
+    ```
+    Emp ID: 201, Name: John Doe, Salary: 50000, Bonus: 5000
+    Emp ID: 202, Name: Jane Smith, Salary: 55000, Bonus: 5500
+    Total Salary for Department 1: 115500
+    ```
     """
-)
+
+    agents[0].initiate_chat(manager, message=task_message)
+
+if __name__ == "__main__":
+    main()
