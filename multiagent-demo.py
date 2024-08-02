@@ -21,8 +21,11 @@ class AgentConfig:
 # Constants
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = "claude-3-5-sonnet-20240620"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = "mixtral-8x7b-32768"
 MAX_CHAT_ROUNDS = 20
 USE_DOCKER = os.getenv("AUTOGEN_USE_DOCKER", "False").lower() in ("true", "1", "t")
+API_TYPE = os.getenv("API_TYPE", "anthropic").lower()  # Default to Anthropic if not set
 
 # Agent system messages
 PLANNER_SYSTEM_MESSAGE = """
@@ -89,20 +92,35 @@ def get_file_content(file_path: str) -> str:
         raise
 
 def create_llm_config() -> Dict:
-    """Create and return the LLM configuration."""
-    if not ANTHROPIC_API_KEY:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-
-    return {
-        "config_list": [
-            {
-                "api_type": "anthropic",
-                "model": ANTHROPIC_MODEL,
-                "api_key": ANTHROPIC_API_KEY,
-            }
-        ],
-        "cache_seed": None,
-    }
+    """Create and return the LLM configuration based on the selected API."""
+    if API_TYPE == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+        return {
+            "config_list": [
+                {
+                    "api_type": "anthropic",
+                    "model": ANTHROPIC_MODEL,
+                    "api_key": ANTHROPIC_API_KEY,
+                }
+            ],
+            "cache_seed": None,
+        }
+    elif API_TYPE == "groq":
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY environment variable is not set")
+        return {
+            "config_list": [
+                {
+                    "api_type": "groq",
+                    "model": GROQ_MODEL,
+                    "api_key": GROQ_API_KEY,
+                }
+            ],
+            "cache_seed": None,
+        }
+    else:
+        raise ValueError(f"Invalid API_TYPE: {API_TYPE}. Must be 'anthropic' or 'groq'.")
 
 def create_agent(config: AgentConfig, llm_config: Dict) -> Agent:
     """Create and return an agent based on the provided configuration."""
