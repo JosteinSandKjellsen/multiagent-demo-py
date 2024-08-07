@@ -22,7 +22,7 @@ class AgentConfig:
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = "claude-3-5-sonnet-20240620"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = "mixtral-8x7b-32768"
+GROQ_MODEL = "gemma2-9b-it"
 MAX_CHAT_ROUNDS = 20
 USE_DOCKER = os.getenv("AUTOGEN_USE_DOCKER", "False").lower() in ("true", "1", "t")
 API_TYPE = os.getenv("API_TYPE", "anthropic").lower()  # Default to Anthropic if not set
@@ -35,6 +35,8 @@ PLANNER_SYSTEM_MESSAGE = """
 - Do not review code; engineer will pass this task to the reviewer.
 - Do not run code; engineer will do this when testing code.
 - After the plan has executed successfully, ask the user to check the result by saying "Dear user"
+- Only use one instance of "Dear <role>" per message. This is used to address the next participant in the plan. This includes the entire message.
+- When starting the plan, address the first participant by saying "Dear <role>". Do not address all participants in the first message.
 """
 
 ENGINEER_SYSTEM_MESSAGE = """
